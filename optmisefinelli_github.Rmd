@@ -1,0 +1,231 @@
+---
+title: "Finelli & linear programming"
+author: "Eija-Leena Koponen"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    keep_md: true
+---
+
+### Optimizing
+
+https://fineli.fi/fineli/fi/elintarvikkeet 
+
+FIN:
+Mahdollisimman vähäsokerinen 7 pv:n ruokavalioehdotus seuraavilla spekseillä: 
+- kokonaisuus mahdollisimman tarkkaan 2000 kcal/pv
+- energiasta 50% hiilareista, 30% proteiineista, 20% rasvoista mahdollisimman tarkkaan
+- kuitua vähintään 20 g/pv 
+- ei samasta ruokaryhmästä (esim. “ateriasalaatti” tai “hampurilainen”) peräkkäisinä päivinä
+- vähintään 5 eri ruoka-ainetta per päivä
+
+ENG:
+Lowest possible amount of sugar in the 7 days diet with following conditions:
+- energy intake 2000 kcal/day
+- of which 50 % should be carbohydrates, 30% protein, 20% fat
+- at least 20g/day fibers
+- on the following days, no items from the same foodgroup
+- at least 5 different items per day
+
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+library(readr)
+library(dplyr)
+library(tidyverse)
+
+options(encoding = "UTF-8", scipen = 999)
+Sys.getlocale()
+#Sys.setlocale("fi_FI.UTF-8/fi_FI.UTF-8/fi_FI.UTF-8/C/fi_FI.UTF-8/fi_FI.UTF-8") #ääkköset
+
+elintarvikkeet <- read_delim("https://fineli.fi/fineli/fi/elintarvikkeet/resultset.csv", 
+        ";", escape_double = FALSE, 
+        locale = locale("fi", decimal_mark=".",
+        asciify = TRUE), 
+    na = "N/A", trim_ws = TRUE) %>%  
+  mutate_all(funs(str_replace(., "<", "")))%>%
+  mutate_at(vars(-"name"),  as.numeric)
+
+summary(elintarvikkeet)
+
+```
+Remove spaces from names in order to refer to them more easily.
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+colnames(elintarvikkeet) <- gsub(" ", "_", colnames(elintarvikkeet))
+colnames(elintarvikkeet) <- gsub("-", "", colnames(elintarvikkeet))
+colnames(elintarvikkeet) <- gsub(",", "", colnames(elintarvikkeet))
+colnames(elintarvikkeet)<- gsub("[()]", "", colnames(elintarvikkeet))
+```
+
+Select columns needed
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+
+elintarvikkeetmod <- elintarvikkeet%>%
+  mutate(ruokaryhma=gsub(",.*$", "", name),
+         kcal=energia_laskennallinen_kJ*0.239005736,
+         sum_hpr=hiilihydraatti_imeytyvä_g+proteiini_g+rasva_g)
+  
+  
+elintarvikkeetmod%>%select(name, ruokaryhma, sokerit_g,
+                        energia_laskennallinen_kJ, kcal,
+                        hiilihydraatti_imeytyvä_g,
+                        proteiini_g,
+                        rasva_g,
+                        kuitu_kokonais_g, kuitu_veteen_liukenematon_g
+                        )%>%summary()
+
+```
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+library(ggplot2)
+library(GGally)
+
+elintarvikkeetmod%>%select(ruokaryhma, sokerit_g,
+                        energia_laskennallinen_kJ, kcal,
+                        hiilihydraatti_imeytyvä_g,
+                        proteiini_g,
+                        rasva_g,
+                        kuitu_kokonais_g
+                        )%>%ggpairs(.
+                                    ,columns = 2:8
+                                    #,mapping=aes(colour=ruokaryhma)
+                                    ) +theme_minimal()
+
+```
+
+And another picture
+
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+library(plotly)
+selected <- c("Ateriasalaatti", "Hampurilainen")
+
+elintarvikkeetmod%>%select(name, ruokaryhma, sokerit_g,
+                        energia_laskennallinen_kJ, kcal,
+                        hiilihydraatti_imeytyvä_g,
+                        proteiini_g,
+                        rasva_g,
+                        kuitu_kokonais_g
+                        )%>%
+  filter(ruokaryhma %in% selected)%>%
+   plot_ly(data = ., x = ~kcal, y = ~sokerit_g, color = ~ruokaryhma,
+           text = ~name)
+
+
+elintarvikkeetmod%>%select(name, ruokaryhma, sokerit_g,
+                        energia_laskennallinen_kJ, kcal,
+                        hiilihydraatti_imeytyvä_g,
+                        proteiini_g,
+                        rasva_g,
+                        kuitu_kokonais_g
+                        )%>%
+  filter(ruokaryhma %in% selected)%>%
+   plot_ly(data = ., x = ~kcal, y = ~proteiini_g, color = ~ruokaryhma,
+           text = ~name)
+```
+
+The objective function in the above problem will be:
+
+min(sokerit)
+
+when 0.5hiilarit+0.3proteiini+0.2rasvat
+2000kcal
+min(kuitu)=20g
+count(rows)>=5
+
+
+```{r eval=TRUE, warning=FALSE}
+library(lpSolve)
+ # Constraint matrix
+constraints <- rbind(elintarvikkeetmod$kcal,
+                elintarvikkeetmod$kcal, 
+                elintarvikkeetmod$kuitu_kokonais_g, 
+                nrow(elintarvikkeetmod),
+                (elintarvikkeetmod$hiilihydraatti_imeytyvä_g/elintarvikkeetmod$sum_hpr),
+                (elintarvikkeetmod$proteiini_g/elintarvikkeetmod$sum_hpr),
+                (elintarvikkeetmod$rasva_g/elintarvikkeetmod$sum_hpr)
+               
+                )
+
+mod <- lp("min",  # min/max
+          elintarvikkeetmod$sokerit_g,  # Objective
+         constraints   ,  # Constraint matrix
+          c(">=", "<=", ">=",">=", ">=",">=",">="),  # Constraint directions
+          c(1990,2010, 20,5, 0.5,0.3,0.2), #Limits
+          all.bin = TRUE
+         ,num.bin.solns = 150
+)
+
+
+mod
+```
+Results
+
+```{r eval=TRUE, warning=FALSE, message=FALSE}
+### solve the problem multiple times
+#solved1<- lp("max", f.obj, f.con, f.dir, f.rhs, all.bin=TRUE,   num.bin.solns = 10)
+#solved1
+
+numcols <- ncol(constraints) 
+numsols <- mod$num.bin.solns
+
+solutions_all <- matrix(head(mod$solution, numcols*numsols), nrow=numsols, byrow=TRUE)
+
+
+##attach them to the dataframe
+for(i in 1:numsols){
+  elintarvikkeetmod[, ncol(elintarvikkeetmod) + 1] <- solutions_all[i,]#rnorm(nrow(simple))
+  names(elintarvikkeetmod)[ncol(elintarvikkeetmod)] <- paste0("solution", i)
+}
+
+```
+
+Check results
+
+```{r}
+
+library(tidyr)
+library(reshape2)
+
+solutionstacked<- elintarvikkeetmod%>%
+  select(ruokaryhma, name, kcal,sokerit_g,kuitu_kokonais_g, solution1:paste0("solution",numsols))%>%
+  reshape2::melt(., id=c("ruokaryhma","name","kcal", "sokerit_g", "kuitu_kokonais_g"))%>%
+  filter(value==1)
+
+solutionstacked%>%
+  group_by(variable)%>%
+  summarise(sum_kcal=sum(kcal),
+            sum_sokerit=sum(sokerit_g),
+            sum_kuitu=sum(kuitu_kokonais_g))%>%
+  head()
+
+```
+
+
+Select 7 day diet from the options, no same ruokaryhmä on consecutive days
+```{r eval=TRUE, warning=FALSE, message = FALSE}
+library(tidyr)
+library(reshape)
+
+
+solutionstackedmatrix <- solutionstacked%>%
+  select(ruokaryhma, name, variable, value)%>%
+  reshape::cast(., ruokaryhma+name ~ variable, mean)
+
+firstselection <- elintarvikkeetmod%>%
+  select(solution1:paste0("solution",numsols))%>%
+  names()%>%
+  sample(., 1, replace = FALSE, prob = NULL)
+
+discard <- solutionstacked%>%filter(variable==firstselection)%>%
+  group_by(variable, ruokaryhma)%>%summarise(n=n())
+
+nextselectiondiscard <-solutionstacked %>%
+    group_by(variable) %>%
+    filter(!any(ruokaryhma %in% discard$ruokaryhma))%>%
+    select(variable)%>%as.list()
+
+nextselectiondiscard
+##doesn't give any other 'ruokaryhmä' :(
+
+#nextselection<- 
+
+
+```
+With these results /approach it is not possible to select from different food groups!
